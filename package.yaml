@@ -48,7 +48,6 @@ dependencies:
   - template-haskell
   - th-lift-instances
   - extra
-  - process
 
 when:
 - condition: "!impl(ghc >= 8.0)"
@@ -71,6 +70,7 @@ executables:
     main: src/futhark.hs
     dependencies:
       - futhark
+      - process
       - random
       - process-extras
       - temporary
@@ -94,6 +94,12 @@ executables:
   futhark-pyopencl:
     <<: *futhark
     main: src/futhark-pyopencl.hs
+  futhark-cs:
+    <<: *futhark
+    main: src/futhark-cs.hs
+  futhark-csopencl:
+    <<: *futhark
+    main: src/futhark-csopencl.hs
   futhark-test:
     <<: *futhark
     main: src/futhark-test.hs
