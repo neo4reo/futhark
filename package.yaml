@@ -48,6 +48,7 @@ dependencies:
   - template-haskell
   - th-lift-instances
   - extra
+  - process
 
 when:
 - condition: "!impl(ghc >= 8.0)"
