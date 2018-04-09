@@ -136,7 +136,7 @@ generateBoilerplate opencl_code opencl_prelude kernel_names types sizes = do
   CS.addMemberDecl $ AssignTyped (CustomT cfg) (Var "cfg") Nothing
   CS.addMemberDecl $ AssignTyped (CustomT ctx) (Var "ctx") Nothing
 
-  CS.atInit $ Reassign (Var "cfg") $ CS.simpleCall new_cfg []
+  CS.beforeParse $ Reassign (Var "cfg") $ CS.simpleCall new_cfg []
   CS.atInit $ Exp $ CS.simpleCall new_ctx [Var "cfg"]
   CS.atInit $ Reassign (Var "ctx.EMPTY_MEM_HANDLE") $ CS.simpleCall "empty_mem_handle" [Var "ctx.opencl.context"]
 
