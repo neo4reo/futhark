@@ -902,7 +902,7 @@ addTiming statements =
    , Exp $ simpleCall "stop_watch.Start" [] ] ++
    statements ++
    [ Exp $ simpleCall "stop_watch.Stop" []
-   , Assign (Var "time_elapsed") $ BinOp "*" (Field (Var "stop_watch") "ElapsedMilliseconds") (Integer 1000)
+   , Assign (Var "time_elapsed") $ asMicroseconds (Var "stop_watch")
    , If (not_null (Var "runtime_file")) print_runtime []
    ]
    , If (not_null (Var "runtime_file")) [Exp $ simpleCall "runtime_file.Close" []] []
@@ -914,6 +914,10 @@ addTiming statements =
            Exp $ simpleCall "runtime_file_writer.WriteLine" [String "\n"]]
 
         not_null var = BinOp "!=" var Null
+
+        asMicroseconds watch =
+          BinOp "/" (Field watch "ElapsedTicks")
+          (BinOp "/" (Field (Var "TimeSpan") "TicksPerMillisecond") (Integer 1000))
 
 compileUnOp :: Imp.UnOp -> String
 compileUnOp op =

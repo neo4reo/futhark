@@ -194,11 +194,12 @@ launchKernel kernel_name kernel_dims workgroup_dims args = do
               CS.simpleCall "CL10.Finish"
                 [Var "ctx.opencl.queue"]]
           , Exp $ CallMethod (Var stop_watch) (Var "Stop") []
-          , Assign (Var time_diff) $ BinOp "*" (Field (Var stop_watch) "ElapsedMilliseconds") (Integer 1000)
+          , Assign (Var time_diff) $ asMicroseconds (Var stop_watch)
           , AssignOp "+" (Var $ ctx $ kernelRuntime kernel_name) (Var time_diff)
           , AssignOp "+" (Var $ ctx $ kernelRuns kernel_name) (Integer 1)
           , Exp $ CS.consoleErrorWriteLine "kernel {0} runtime: {1}" [String kernel_name, Var time_diff]
           ]
+
 
   CS.stm $ If (BinOp "!=" total_elements (Integer 0))
     ([ Assign (Var global_work_size) (Collection "IntPtr[]" $ map CS.toIntPtr kernel_dims)
@@ -245,6 +246,10 @@ launchKernel kernel_name kernel_dims workgroup_dims args = do
 
         printKernelDim global_work_size i =
           CS.consoleErrorWrite "{0}" [Index (Var global_work_size) (IdxExp (Integer $ toInteger i))]
+
+        asMicroseconds watch =
+          BinOp "/" (Field watch "ElapsedTicks")
+          (BinOp "/" (Field (Var "TimeSpan") "TicksPerMillisecond") (Integer 1000))
 
 
 

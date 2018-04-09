@@ -227,7 +227,7 @@ openClReport names =
           let padding = replicate (longest_name - length name) ' '
           in unwords ["Kernel",
                       name ++ padding,
-                      "executed {0} times, with average runtime: {1:0.000000}\tand total runtime: {2:0.000000}"]
+                      "executed {0} times, with average runtime: {1}\tand total runtime: {2}"]
         reportKernel name =
           let runs = ctx $ kernelRuns name
               total_runtime = ctx $ kernelRuntime name
@@ -245,7 +245,7 @@ openClReport names =
              , AssignOp "+" (Var $ ctx "total_runs") (Var runs)
              ] []
 
-        ran_text = "Ran {0} kernels with cumulative runtime: {1:0.000000}"
+        ran_text = "Ran {0} kernels with cumulative runtime: {1}"
         report_total = Exp $ consoleErrorWriteLine ran_text [ Var $ ctx "total_runs"
                                                             , Var $ ctx "total_runtime"]
 
