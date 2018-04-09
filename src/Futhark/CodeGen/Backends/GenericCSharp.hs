@@ -43,6 +43,7 @@ module Futhark.CodeGen.Backends.GenericCSharp
   , stms
   , atInit
   , addMemberDecl
+  , beforeParse
   , collect'
   , collect
   , simpleCall
@@ -203,6 +204,7 @@ newCompilerEnv (Imp.Functions funs) ops =
 
 data CompilerState s = CompilerState {
     compNameSrc :: VNameSource
+  , compBeforeParse :: [CSStmt]
   , compInit :: [CSStmt]
   , compDebugItems :: [CSStmt]
   , compUserState :: s
@@ -211,6 +213,7 @@ data CompilerState s = CompilerState {
 
 newCompilerState :: VNameSource -> s -> CompilerState s
 newCompilerState src s = CompilerState { compNameSrc = src
+                                       , compBeforeParse = []
                                        , compInit = []
                                        , compDebugItems = []
                                        , compMemberDecls = []
@@ -234,6 +237,10 @@ collect' :: CompilerM op s a -> CompilerM op s (a, [CSStmt])
 collect' m = pass $ do
   (x, w) <- listen m
   return ((x, w), const mempty)
+
+beforeParse :: CSStmt -> CompilerM op s ()
+beforeParse x = modify $ \s ->
+  s { compBeforeParse = compBeforeParse s ++ [x] }
 
 atInit :: CSStmt -> CompilerM op s ()
 atInit x = modify $ \s ->
@@ -327,7 +334,7 @@ data Constructor = Constructor [CSFunDefArg] [CSStmt]
 
 -- | A constructor that takes no arguments and does nothing.
 emptyConstructor :: Constructor
-emptyConstructor = Constructor [] []
+emptyConstructor = Constructor [(Composite $ ArrayT $ Primitive StringT, "args")] []
 
 constructorToConstructorDef :: Constructor -> String -> [CSStmt] -> CSStmt
 constructorToConstructorDef (Constructor params body) name at_init =
@@ -359,29 +366,32 @@ compileProg module_name constructor imports defines ops userstate boilerplate pr
                  , Using Nothing "static System.ValueTuple"
                  , Using Nothing "static System.Convert"
                  , Using Nothing "static System.Math"
+                 , Using Nothing "Cloo"
+                 , Using Nothing "Cloo.Bindings"
                  , Using Nothing "Mono.Options" ] ++ imports
 
   return $ pretty (CSProg $ Escape "#define DEBUG" : imports' ++ prog')
   where compileProg' = do
           definitions <- mapM compileFunc funs
           opencl_boilerplate <- collect boilerplate
-          at_inits <- gets compInit
+          compBeforeParses <- gets compBeforeParse
+          compInits <- gets compInit
           extraMemberDecls <- gets compMemberDecls
           let member_decls' = member_decls ++ extraMemberDecls
+          let at_inits' = at_inits ++ compBeforeParses ++ parse_options ++ compInits
 
-  
 
           case module_name of
             Just name -> do
               entry_points <- mapM compileEntryFun $ filter (Imp.functionEntry . snd) funs
-              let constructor' = constructorToConstructorDef constructor name at_inits
+              let constructor' = constructorToConstructorDef constructor name at_inits'
               return [ClassDef $ Class name $ constructor' : defines' ++ opencl_boilerplate ++
                       map FunDef (definitions ++ entry_points)]
 
 
             Nothing -> do
               let name = "FutharkInternal"
-              let constructor' = constructorToConstructorDef constructor name at_inits
+              let constructor' = constructorToConstructorDef constructor name at_inits'
               (entry_point_defs, entry_point_names, entry_points) <-
                 unzip3 <$> mapM (callEntryFun pre_timing)
                 (filter (Imp.functionEntry . snd) funs)
@@ -389,13 +399,11 @@ compileProg module_name constructor imports defines ops userstate boilerplate pr
               debug_ending <- gets compDebugItems
               return ((ClassDef $
                        Class name $
+                         member_decls' ++
                          constructor' : defines' ++
                          opencl_boilerplate ++
                          map FunDef (definitions ++ entry_point_defs) ++
-                         member_decls' ++
-                         [PublicFunDef $ Def "internal_entry" VoidT [(string_arrayT, "args")] $
-                           parse_options ++ selectEntryPoint entry_point_names entry_points
-                           ++ debug_ending
+                         [PublicFunDef $ Def "internal_entry" VoidT [] $ selectEntryPoint entry_point_names entry_points ++ debug_ending
                          ]
                       ) :
                      [ClassDef $ Class "Program"
@@ -404,17 +412,22 @@ compileProg module_name constructor imports defines ops userstate boilerplate pr
 
         string_arrayT = Composite $ ArrayT $ Primitive StringT
         main_entry :: [CSStmt]
-        main_entry = [ Assign (Var "internal_instance") (simpleInitClass "FutharkInternal" [])
-                     , Exp $ simpleCall "internal_instance.internal_entry" [Var "args"]
+        main_entry = [ Assign (Var "internal_instance") (simpleInitClass "FutharkInternal" [Var "args"])
+                     , Exp $ simpleCall "internal_instance.internal_entry" []
                      ]
 
         member_decls =
           [ AssignTyped (CustomT "FileStream") (Var "runtime_file") Nothing
           , AssignTyped (CustomT "StreamWriter") (Var "runtime_file_writer") Nothing
-          , AssignTyped (Primitive BoolT) (Var "do_warmup_run") (Just $ Bool False)
-          , AssignTyped (Primitive $ CSInt Int32T) (Var "num_runs") (Just $ Integer 1)
-          , AssignTyped (Primitive StringT) (Var "entry_point") (Just $ String "main")
+          , AssignTyped (Primitive BoolT) (Var "do_warmup_run") Nothing
+          , AssignTyped (Primitive $ CSInt Int32T) (Var "num_runs") Nothing
+          , AssignTyped (Primitive StringT) (Var "entry_point") Nothing
           ]
+
+        at_inits = [ Reassign (Var "do_warmup_run") (Bool False)
+                   , Reassign (Var "num_runs") (Integer 1)
+                   , Reassign (Var "entry_point") (String "main")
+                   ]
 
         defines' = [ Escape csScalar
                    , Escape csMemory
@@ -889,16 +902,16 @@ addTiming statements =
    , Exp $ simpleCall "stop_watch.Start" [] ] ++
    statements ++
    [ Exp $ simpleCall "stop_watch.Stop" []
-   , Assign (Var "time_elapsed") $ Field (Var "stop_watch") "ElapsedMilliseconds"
-   , If (not_null (Var "runtime_file")) print_runtime [] ],
-   If (not_null (Var "runtime_file")) [Exp $ simpleCall "runtime_file.Close" []] []
+   , Assign (Var "time_elapsed") $ BinOp "*" (Field (Var "stop_watch") "ElapsedMilliseconds") (Integer 1000)
+   , If (not_null (Var "runtime_file")) print_runtime []
+   ]
+   , If (not_null (Var "runtime_file")) [Exp $ simpleCall "runtime_file.Close" []] []
   )
+
   where print_runtime =
           [Exp $ simpleCall "runtime_file_writer.WriteLine"
-           [ callMethod (toMicroseconds (Var "time_elapsed")) "ToString" [] ],
+           [ callMethod (Var "time_elapsed") "ToString" [] ],
            Exp $ simpleCall "runtime_file_writer.WriteLine" [String "\n"]]
-        toMicroseconds x =
-          BinOp "*" x $ Integer 1000000
 
         not_null var = BinOp "!=" var Null
 
@@ -1051,7 +1064,7 @@ compilePrimValue (FloatValue (Float64Value v))
       Var "Double.NaN"
   | otherwise = simpleCall "Convert.ToDouble" [Float $ fromRational $ toRational v]
 compilePrimValue (BoolValue v) = Bool v
-compilePrimValue Checked = Var "True"
+compilePrimValue Checked = Bool True
 
 compileExp :: Imp.Exp -> CompilerM op s CSExp
 

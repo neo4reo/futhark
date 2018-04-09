@@ -222,7 +222,7 @@ openClReport :: [String] -> CSStmt
 openClReport names =
   If (Var "ctx.debugging") (report_kernels ++ [report_total]) []
   where longest_name = foldl max 0 $ map length names
-        report_kernels = concatMap reportKernel names
+        report_kernels = map reportKernel names
         format_string name =
           let padding = replicate (longest_name - length name) ' '
           in unwords ["Kernel",
@@ -231,7 +231,8 @@ openClReport names =
         reportKernel name =
           let runs = ctx $ kernelRuns name
               total_runtime = ctx $ kernelRuntime name
-          in [Exp $ consoleErrorWriteLine (format_string name)
+          in If (BinOp "!=" (Var runs) (Integer 0))
+             [Exp $ consoleErrorWriteLine (format_string name)
                [ Var runs
                , Ternary (BinOp "!="
                            (BinOp "/"
@@ -242,7 +243,7 @@ openClReport names =
                , Cast (Primitive $ CSInt Int64T) $ Var total_runtime]
              , AssignOp "+" (Var $ ctx "total_runtime") (Var total_runtime)
              , AssignOp "+" (Var $ ctx "total_runs") (Var runs)
-             ]
+             ] []
 
         ran_text = "Ran {0} kernels with cumulative runtime: {1:0.000000}"
         report_total = Exp $ consoleErrorWriteLine ran_text [ Var $ ctx "total_runs"

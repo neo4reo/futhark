@@ -307,6 +307,8 @@ instance Pretty CSStmt where
     indent 4 (stack $ map ppr stmts) </>
     rbrace
 
+  ppr (Fixed _ _) = undefined
+
   ppr (UsingWith assignment body) =
     text "using" <+> parens(ppr assignment) </>
     lbrace </>
@@ -366,10 +368,11 @@ instance Pretty CSClassDef where
 
 instance Pretty CSConstructorDef where
   ppr (ClassConstructor cname params body) =
-    text "public" <+> text cname <> parens(commasep $ map ppr params) </>
+    text "public" <+> text cname <> parens(commasep $ map ppr' params) </>
     lbrace </>
     indent 4 (stack (map ppr body)) </>
     rbrace
+    where ppr' (tp, var) = ppr tp <+> text var
 
 instance Pretty CSExcept where
   ppr (Catch csexp stmts) =
