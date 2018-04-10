@@ -20,17 +20,17 @@ static int shl32(int x, int y){ return x << y; }
 static long shl64(long x, long y){ return x << Convert.ToInt32(y); }
 
 static sbyte ashr8(sbyte x, sbyte y){ return Convert.ToSByte(x >> y); }
-static short ashr16(short x, short y){ return Convert.ToSByte(x >> y); }
+static short ashr16(short x, short y){ return Convert.ToInt16(x >> y); }
 static int ashr32(int x, int y){ return x >> y; }
 static long ashr64(long x, long y){ return x >> Convert.ToInt32(y); }
 
 static sbyte sdiv8(sbyte x, sbyte y){ return Convert.ToSByte(x / y); }
-static short sdiv16(short x, short y){ return Convert.ToSByte(x / y); }
+static short sdiv16(short x, short y){ return Convert.ToInt16(x / y); }
 static int sdiv32(int x, int y){ return x / y; }
 static long sdiv64(long x, long y){ return x / y; }
 
 static sbyte smod8(sbyte x, sbyte y){ return Convert.ToSByte(x % y); }
-static short smod16(short x, short y){ return Convert.ToSByte(x % y); }
+static short smod16(short x, short y){ return Convert.ToInt16(x % y); }
 static int smod32(int x, int y){ return x % y; }
 static long smod64(long x, long y){ return x % y; }
 
@@ -50,10 +50,10 @@ static int squot32(int x, int y){ return Convert.ToInt32(ToSingle(x) / ToSingle(
 static long squot64(long x, long y){ return Convert.ToInt64(ToSingle(x) / ToSingle(y)); }
 
 // static Maybe change srem, it calls np.fmod originally so i dont know
-static sbyte srem8(sbyte x, sbyte y){ return sdiv8(x,y);}
-static short srem16(short x, short y){ return sdiv16(x,y);}
-static int srem32(int x, int y){ return sdiv32(x,y);}
-static long srem64(long x, long y){ return sdiv64(x,y);}
+static sbyte srem8(sbyte x, sbyte y){ return smod8(x,y);}
+static short srem16(short x, short y){ return smod16(x,y);}
+static int srem32(int x, int y){ return smod32(x,y);}
+static long srem64(long x, long y){ return smod64(x,y);}
 
 static sbyte smin8(sbyte x, sbyte y){ return Math.Min(x,y);}
 static short smin16(short x, short y){ return Math.Min(x,y);}
