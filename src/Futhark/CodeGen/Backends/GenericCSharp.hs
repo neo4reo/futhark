@@ -879,7 +879,7 @@ callEntryFun pre_timing entry@(fname, Imp.Function _ outputs _ _ _ decl_args) = 
         If (Var "do_warmup_run") (prepare_run ++ do_run) []
 
       do_num_runs =
-        For "i" (Var "num_runs") (prepare_run ++ do_run_with_timing)
+        For "i" (Var "num_runs") (prepare_run ++ do_run_with_timing ++ [Exp $ simpleCall "System.GC.Collect" []])
 
   str_output <- printValue res
 
