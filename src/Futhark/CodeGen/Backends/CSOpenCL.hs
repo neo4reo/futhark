@@ -397,7 +397,7 @@ packArrayOutput mem "device" bt ept dims = do
   let createArray = "createArray_"++ pretty bt'
 
   return $ CS.simpleCall createArray [ Var $ CS.compileName mem, Var "ctx.opencl.queue"
-                                     , Var "synchronous", nbytes
+                                     , Bool True, nbytes
                                      , CreateArray (Primitive $ CSInt Int64T) dims']
   where dims' = map CS.compileDim dims
 
