@@ -46,6 +46,7 @@ module Futhark.Construct
   , fullSliceNum
   , isFullSlice
   , ifCommon
+  , nilFn
 
   , module Futhark.Binder
 
@@ -414,6 +415,10 @@ isFullSlice shape slice = and $ zipWith allOfIt (shapeDims shape) slice
 
 ifCommon :: [Type] -> IfAttr ExtType
 ifCommon ts = IfAttr (staticShapes ts) IfNormal
+
+-- | A lambda with no parameters that returns no values.
+nilFn :: Bindable lore => LambdaT lore
+nilFn = Lambda mempty (mkBody mempty mempty) mempty
 
 -- | Conveniently construct a body that contains no bindings.
 resultBody :: Bindable lore => [SubExp] -> Body lore

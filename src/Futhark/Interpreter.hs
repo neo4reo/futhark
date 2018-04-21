@@ -621,6 +621,28 @@ evalSOAC (Scanomap w _ innerfun accexp arrexps) = do
                 acc_arr = zipWith (:) res_arr arr
             return (res_acc, res_acc:l, acc_arr)
 
+evalSOAC (WithLoop w (WithLoopForm (_, scan_nes) (_, _, red_nes) map_lam) arrs) = do
+  scan_nes' <- mapM evalSubExp scan_nes
+  red_nes' <- mapM evalSubExp red_nes
+
+  let initial = ([], red_nes', [], scan_nes')
+
+  (scan_res, red_res, map_res, _) <-
+    foldM applyMapLam initial =<< soacArrays w arrs
+
+  scan_res' <- arrays scan_ts $ reverse $ transpose scan_res
+  map_res' <- arrays map_ts $ reverse $ transpose map_res
+
+  return $ scan_res' ++ red_res ++ map_res'
+  where (scan_ts, _red_ts, map_ts) =
+          splitAt3 (length scan_nes) (length red_nes) $ lambdaReturnType map_lam
+
+        applyMapLam (scan_out, red_acc, map_out, scan_acc) x = do
+          (scan_res, red_res, map_res) <-
+            splitAt3 (length scan_nes) (length red_nes) <$>
+            applyLambda map_lam (scan_acc ++ red_acc ++ x)
+          return (scan_res : scan_out, red_res, map_res : map_out, scan_res)
+
 evalSOAC (Scatter w lam ivs dests) = do
   w' <- asInt32 "Scatter w" =<< evalSubExp w
 

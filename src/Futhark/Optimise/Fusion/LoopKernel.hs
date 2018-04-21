@@ -196,6 +196,7 @@ removeUnusedParamsFromKer ker =
     SOAC.Map {}     -> ker { fsoac = soac' }
     SOAC.Redomap {} -> ker { fsoac = soac' }
     SOAC.Scanomap {} -> ker { fsoac = soac' }
+    SOAC.WithLoop {} -> ker { fsoac = soac' }
     _               -> ker
   where soac = fsoac ker
         l = SOAC.lambda soac
@@ -307,6 +308,31 @@ fuseSOACwithKer unfus_set outVars soac1 soac1_consumed ker = do
           res_lam' = res_lam { lambdaReturnType = lambdaReturnType res_lam ++ extra_rtps }
       success (outNames ker ++ returned_outvars) $
               SOAC.Redomap w comm2 lam21 res_lam' nes new_inp
+
+    (SOAC.WithLoop _ (WithLoopForm scan red _) _, SOAC.Map {})
+      | mapFusionOK outVars ker || horizFuse -> do
+      let (res_lam, new_inp) = fuseMaps unfus_set lam1 inp1_arr outPairs lam2 inp2_arr
+          (_,extra_rtps) = unzip $ filter ((`S.member` unfus_set) . fst) $
+                           zip outVars $ map (stripArray 1) $ SOAC.typeOf soac1
+          res_lam' = res_lam { lambdaReturnType = lambdaReturnType res_lam ++ extra_rtps }
+      success (outNames ker ++ returned_outvars) $
+        SOAC.WithLoop w (WithLoopForm scan red res_lam') new_inp
+
+    (SOAC.WithLoop _ (WithLoopForm (scan_lam2, scan_nes2) (comm2, red_lam2, red_nes2) _) _,
+     SOAC.WithLoop _ (WithLoopForm (scan_lam1, scan_nes1) (comm1, red_lam1, red_nes1) _) _)
+      | mapFusionOK (drop (length $ scan_nes1++red_nes1) outVars) ker || horizFuse -> do
+      let (res_lam', new_inp) = fuseRedomap unfus_set outVars
+                                            (scan_nes1++red_nes1) lam1 inp1_arr
+                                            outPairs red_lam2 inp2_arr
+          unfus_accs  = take (length red_nes1) outVars
+          unfus_arrs  = returned_outvars \\ unfus_accs
+          scan_lam'   = mergeReduceOps scan_lam1 scan_lam2
+          red_lam'    = mergeReduceOps red_lam1 red_lam2
+      success (unfus_accs ++ outNames ker ++ unfus_arrs) $
+        SOAC.WithLoop w (WithLoopForm (scan_lam', scan_nes1++scan_nes2)
+                                      (comm1<>comm2, red_lam', red_nes1++red_nes2)
+                                      res_lam')
+                        new_inp
 
     ----------------------------
     -- Scanomap Fusions:      --

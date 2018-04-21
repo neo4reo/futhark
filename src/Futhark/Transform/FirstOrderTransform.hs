@@ -36,7 +36,7 @@ import Futhark.Tools
 import qualified Futhark.Analysis.Alias as Alias
 import Futhark.Representation.Aliases (Aliases, removeLambdaAliases)
 import Futhark.Representation.AST.Attributes.Aliases
-import Futhark.Util (chunks)
+import Futhark.Util (chunks, splitAt3)
 
 transformFunDef :: (MonadFreshNames m, Bindable tolore, BinderOps tolore,
                     LetAttr SOACS ~ LetAttr tolore,
@@ -189,10 +189,74 @@ transformSOAC pat (Redomap width _ _ innerfun accexps arrexps) = do
     if paramName p `S.member` consumed then
       letExp (baseString a ++ "_fot_redomap_copy") $ BasicOp $ Copy a
     else return a
+
+
+
   pat' <- discardPattern arr_ts pat
   letBind_ pat' =<<
     doLoopMapAccumL width innerfun' accexps arrexps' maparrs
 
+transformSOAC pat (WithLoop w form@(WithLoopForm (_, scan_nes) (_, _, red_nes) map_lam) arrs) = do
+  let (scan_arr_ts, _red_ts, map_arr_ts) =
+        splitAt3 (length scan_nes) (length red_nes) $ withLoopType w form
+  scan_arrs <- resultArray scan_arr_ts
+  map_arrs <- resultArray map_arr_ts
+  let (lam_scan_params, lam_red_params, lam_arr_params) =
+        splitAt3 (length scan_nes) (length red_nes) $ lambdaParams map_lam
+
+  -- We construct a loop that contains several groups of merge
+  -- parameters:
+  --
+  -- (1) scan results.
+  -- (2) reduce results (and accumulator).
+  -- (3) map results.
+  -- (4) scan accumulator.
+  --
+  -- Inside the loop, we make the parameters to map_lam available.
+  -- The reduction and scan accumulator parameters become merge
+  -- parameters, and the input array parameters become for-in
+  -- parameters.
+
+  scanout_params <- mapM (newParam "scanout" . flip toDecl Unique) scan_arr_ts
+  let redout_params = map (fmap $ flip toDecl Nonunique) lam_red_params
+  mapout_params <- mapM (newParam "mapout" . flip toDecl Unique) map_arr_ts
+  let scanacc_params = map (fmap $ flip toDecl Nonunique) lam_scan_params
+
+  let merge = concat [zip scanout_params $ map Var scan_arrs,
+                      zip redout_params red_nes,
+                      zip mapout_params $ map Var map_arrs,
+                      zip scanacc_params scan_nes]
+  i <- newVName "i"
+  let loopform = ForLoop i Int32 w $ zip lam_arr_params arrs
+
+  loop_body <- runBodyBinder $
+               localScope (scopeOfFParams $ map fst merge) $
+               inScopeOf loopform $ do
+    -- Insert the statements of the lambda.  We have taken care to
+    -- ensure that the parameters are bound at this point.
+    mapM_ addStm $ bodyStms $ lambdaBody map_lam
+    -- Split into scan results, reduce results, and map results.
+    let (scan_res, red_res, map_res) =
+          splitAt3 (length scan_nes) (length red_nes) $
+          bodyResult $ lambdaBody map_lam
+
+    -- Write the scan accumulator to the scan result arrays.
+    scan_outarrs <- letwith (map paramName scanout_params) (pexp (Var i)) $
+                    map (BasicOp . SubExp) scan_res
+
+    -- Write the map results to the map result arrays.
+    map_outarrs <- letwith (map paramName mapout_params) (pexp (Var i)) $
+                   map (BasicOp . SubExp) map_res
+
+    return $ resultBody $ concat [map Var scan_outarrs,
+                                  red_res,
+                                  map Var map_outarrs,
+                                  scan_res]
+
+  -- We need to discard the final scan accumulators, as they are not
+  -- bound in the original pattern.
+  pat' <- discardPattern (map paramType scanacc_params) pat
+  letBind_ pat' $ DoLoop [] merge loopform loop_body
 
 -- | Translation of STREAM is non-trivial and quite incomplete for the moment!
 -- Assumming size of @A@ is @m@, @?0@ has a known upper bound @U@, and @?1@

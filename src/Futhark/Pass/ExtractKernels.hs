@@ -678,6 +678,8 @@ unbalancedLambda lam =
           w `subExpBound` bound
         unbalancedStm bound (Op (Stream w _ _ _)) =
           w `subExpBound` bound
+        unbalancedStm bound (Op (WithLoop w _ _)) =
+          w `subExpBound` bound
         unbalancedStm _ (Op Scatter{}) =
           False
         unbalancedStm _ DoLoop{} = False

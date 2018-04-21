@@ -73,11 +73,11 @@ import qualified Data.Sequence as Seq
 import qualified Data.Semigroup as Sem
 
 import qualified Futhark.Representation.AST as Futhark
-import Futhark.Representation.SOACS.SOAC (StreamForm(..), getStreamAccums)
+import Futhark.Representation.SOACS.SOAC
+  (StreamForm(..), WithLoopForm(..), withLoopType, getStreamAccums)
 import qualified Futhark.Representation.SOACS.SOAC as Futhark
 import Futhark.Representation.AST
-  hiding (Var, Iota, Rearrange, Reshape, Replicate,
-          typeOf)
+  hiding (Var, Iota, Rearrange, Reshape, Replicate, typeOf)
 import Futhark.Transform.Substitute
 import Futhark.Construct hiding (toExp)
 import Futhark.Transform.Rename (renameLambda)
@@ -363,6 +363,7 @@ data SOAC lore = Map SubExp (Lambda lore) [Input]
                | Scanomap SubExp (Lambda lore) (Lambda lore) [SubExp] [Input]
                | Stream SubExp (StreamForm lore) (Lambda lore) [Input]
                | Scatter SubExp (Lambda lore) [Input] [(SubExp, Int, VName)]
+               | WithLoop SubExp (WithLoopForm lore) [Input]
             deriving (Show)
 
 -- | Returns the inputs used in a SOAC.
@@ -371,9 +372,10 @@ inputs (Map      _ _       arrs) = arrs
 inputs (Reduce   _ _ _     args) = map snd args
 inputs (Scan     _ _       args) = map snd args
 inputs (Redomap  _ _ _ _ _ arrs) = arrs
-inputs (Scanomap _ _ _ _  arrs) = arrs
+inputs (Scanomap _ _ _ _   arrs) = arrs
 inputs (Stream   _ _ _     arrs) = arrs
 inputs (Scatter  _len _lam ivs _as) = ivs
+inputs (WithLoop _ _       arrs) = arrs
 
 -- | Set the inputs to a SOAC.
 setInputs :: [Input] -> SOAC lore -> SOAC lore
@@ -391,6 +393,8 @@ setInputs arrs (Stream w form lam _) =
   Stream (newWidth arrs w) form lam arrs
 setInputs arrs (Scatter w lam _ivs as) =
   Scatter (newWidth arrs w) lam arrs as
+setInputs arrs (WithLoop w form _) =
+  WithLoop w form arrs
 
 newWidth :: [Input] -> SubExp -> SubExp
 newWidth [] w = w
@@ -405,6 +409,7 @@ lambda (Redomap  _ _ _ lam2 _ _) = lam2
 lambda (Scanomap _ _ lam2 _ _) = lam2
 lambda (Stream  _ _ lam      _) = lam
 lambda (Scatter _len lam _ivs _as) = lam
+lambda (WithLoop _ (WithLoopForm _ _ lam) _) = lam
 
 -- | Set the lambda used in the SOAC.
 setLambda :: Lambda lore -> SOAC lore -> SOAC lore
@@ -422,6 +427,8 @@ setLambda lam (Stream w form _ arrs) =
   Stream w form lam arrs
 setLambda lam (Scatter len _lam ivs as) =
   Scatter len lam ivs as
+setLambda lam (WithLoop w (WithLoopForm scan red _) arrs) =
+  WithLoop w (WithLoopForm scan red lam) arrs
 
 -- | The return type of a SOAC.
 typeOf :: SOAC lore -> [Type]
@@ -450,6 +457,8 @@ typeOf (Scatter _w lam _ivs dests) =
   where lam_ts = lambdaReturnType lam
         n = length lam_ts
         (aws, _, _) = unzip3 dests
+typeOf (WithLoop w form _) =
+  withLoopType w form
 
 -- | The "width" of a SOAC is the expected outer size of its array
 -- inputs _after_ input-transforms have been carried out.
@@ -461,6 +470,7 @@ width (Redomap w _ _ _ _ _) = w
 width (Scanomap w _ _ _ _) = w
 width (Stream w _ _ _) = w
 width (Scatter len _lam _ivs _as) = len
+width (WithLoop w _ _) = w
 
 -- | Convert a SOAC to the corresponding expression.
 toExp :: (MonadBinder m, Op (Lore m) ~ Futhark.SOAC (Lore m)) =>
@@ -487,6 +497,8 @@ toSOAC (Stream w form lam inps) =
 toSOAC (Scatter len lam ivs dests) = do
   ivs' <- inputsToSubExps ivs
   return $ Futhark.Scatter len lam ivs' dests
+toSOAC (WithLoop w form arrs) =
+  Futhark.WithLoop w form <$> inputsToSubExps arrs
 
 -- | The reason why some expression cannot be converted to a 'SOAC'
 -- value.
@@ -516,6 +528,8 @@ fromExp (Op (Futhark.Stream w form lam as)) =
 fromExp (Op (Futhark.Scatter len lam ivs as)) = do
   ivs' <- traverse varInput ivs
   return $ Right $ Scatter len lam ivs' as
+fromExp (Op (Futhark.WithLoop w form arrs)) =
+  Right . WithLoop w form <$> traverse varInput arrs
 fromExp _ = pure $ Left NotSOAC
 
 -- | To-Stream translation of SOACs.
@@ -669,6 +683,8 @@ soacToStream soac = do
     Stream{} -> return (soac,[])
     -- If the soac is a write, don't try to do anything.
     Scatter{} -> return (soac, [])
+    -- If the soac is a WithLoop, don't try to do anything.
+    WithLoop{} -> return (soac, [])
     -- HELPER FUNCTIONS
     where mkMapPlusAccLam :: (MonadFreshNames m, Bindable lore)
                           => [SubExp] -> Lambda lore -> m (Lambda lore)

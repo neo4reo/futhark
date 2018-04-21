@@ -128,6 +128,20 @@ simplifySOAC (Scatter len lam ivs as) = do
   as' <- mapM Engine.simplify as
   return (Scatter len' lam' ivs' as', hoisted)
 
+simplifySOAC (WithLoop w (WithLoopForm (scan_lam, scan_nes) (comm, red_lam, red_nes) map_lam) arrs) = do
+  (scan_lam', scan_lam_hoisted) <-
+    Engine.simplifyLambda scan_lam $ replicate (length scan_nes) Nothing
+  (red_lam', red_lam_hoisted) <-
+    Engine.simplifyLambda red_lam $ replicate (length red_nes) Nothing
+  (map_lam', map_lam_hoisted) <- Engine.simplifyLambda map_lam $ map Just arrs
+  (,) <$> (WithLoop <$> Engine.simplify w <*>
+           (WithLoopForm <$>
+             ((,) scan_lam' <$> Engine.simplify scan_nes) <*>
+             ((,,) comm red_lam' <$> Engine.simplify red_nes) <*>
+             pure map_lam') <*>
+            Engine.simplify arrs) <*>
+    pure (scan_lam_hoisted <> red_lam_hoisted <> map_lam_hoisted)
+
 instance BinderOps (Wise SOACS) where
   mkExpAttrB = bindableMkExpAttrB
   mkBodyB = bindableMkBodyB

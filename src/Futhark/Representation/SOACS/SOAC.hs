@@ -7,12 +7,14 @@
 module Futhark.Representation.SOACS.SOAC
        ( SOAC(..)
        , StreamForm(..)
+       , WithLoopForm(..)
 
        , typeCheckSOAC
 
          -- * Utility
        , getStreamOrder
        , getStreamAccums
+       , withLoopType
 
          -- * Generic traversal
        , SOACMapper(..)
@@ -45,7 +47,7 @@ import Futhark.Analysis.PrimExp.Convert
 import qualified Futhark.TypeCheck as TC
 import Futhark.Analysis.Metrics
 import qualified Futhark.Analysis.Range as Range
-import Futhark.Util (maybeNth, chunks)
+import Futhark.Util (maybeNth, chunks, takeLast)
 
 data SOAC lore =
     Map SubExp (LambdaT lore) [VName]
@@ -78,12 +80,33 @@ data SOAC lore =
     --     [index_0, index_1, ..., index_n, value_0, value_1, ..., value_n]
     --
     -- This must be consistent along all Scatter-related optimisations.
+  | WithLoop SubExp (WithLoopForm lore) [VName]
+    -- ^ A combination of scan, reduction, and map.  The first
+    -- 'SubExp' is the size of the input arrays.  The first
+    -- 'Lambda'/'SubExp' pair is for scan and its neutral elements.
+    -- The second is for the reduction.  The final lambda is for the
+    -- map part, and finally comes the input arrays.
     deriving (Eq, Ord, Show)
 
 data StreamForm lore  =
     Parallel StreamOrd Commutativity (LambdaT lore) [SubExp]
   | Sequential [SubExp]
   deriving (Eq, Ord, Show)
+
+-- | The essential parts of a 'WithLoop' factored out (everything
+-- except the input arrays).
+data WithLoopForm lore = WithLoopForm
+                         (LambdaT lore, [SubExp])
+                         (Commutativity, LambdaT lore, [SubExp])
+                         (LambdaT lore)
+  deriving (Eq, Ord, Show)
+
+withLoopType :: SubExp -> WithLoopForm lore -> [Type]
+withLoopType w (WithLoopForm (scan_lam, _scan_nes) (_, red_lam, _red_nes) map_lam) =
+  map (`arrayOfRow` w) scan_tps ++ red_tps ++ map (`arrayOfRow` w) map_tps
+  where scan_tps = lambdaReturnType scan_lam
+        red_tps  = lambdaReturnType red_lam
+        map_tps  = drop (length scan_tps + length red_tps) $ lambdaReturnType map_lam
 
 -- | Like 'Mapper', but just for 'SOAC's.
 data SOACMapper flore tlore m = SOACMapper {
@@ -141,6 +164,13 @@ mapSOACM tv (Scatter len lam ivs as) =
   <*> mapM (mapOnSOACVName tv) ivs
   <*> mapM (\(aw,an,a) -> (,,) <$> mapOnSOACSubExp tv aw <*>
                           pure an <*> mapOnSOACVName tv a) as
+mapSOACM tv (WithLoop w (WithLoopForm (scan_lam, scan_nes) (comm, red_lam, red_nes) map_lam) arrs) =
+  WithLoop <$> mapOnSOACSubExp tv w <*>
+  (WithLoopForm <$>
+   ((,) <$> mapOnSOACLambda tv scan_lam <*> mapM (mapOnSOACSubExp tv) scan_nes) <*>
+   ((,,) comm <$> mapOnSOACLambda tv red_lam <*> mapM (mapOnSOACSubExp tv) red_nes) <*>
+   mapOnSOACLambda tv map_lam)
+  <*> mapM (mapOnSOACVName tv) arrs
 
 instance Attributes lore => FreeIn (SOAC lore) where
   freeIn = execWriter . mapSOACM free
@@ -199,31 +229,18 @@ soacType (Scatter _w lam _ivs as) =
   where val_ts = concatMap (take 1) $ chunks ns $
                  drop (sum ns) $ lambdaReturnType lam
         (ws, ns, _) = unzip3 as
+soacType (WithLoop w form _arrs) =
+  staticShapes $ withLoopType w form
 
 instance TypedOp (SOAC lore) where
   opType = pure . soacType
 
 instance (Attributes lore, Aliased lore) => AliasedOp (SOAC lore) where
-  opAliases (Map _ f _) =
-    map (const mempty) $ lambdaReturnType f
-  opAliases (Reduce _ _ f _) =
-    map (const mempty) $ lambdaReturnType f
-  opAliases (Scan _ f _) =
-    map (const mempty) $ lambdaReturnType f
-  opAliases (Redomap _ _ _ innerfun _ _) =
-    map (const mempty) $ lambdaReturnType innerfun
-  opAliases (Scanomap _ _ innerfun _ _)  =
-    map (const mempty) $ lambdaReturnType innerfun
-  opAliases (Stream _ form lam _) =
-    let a1 = case form of
-               Parallel _ _ lam0 _ -> map (const mempty) $ lambdaReturnType lam0
-               Sequential _       -> []
-    in a1 ++ map (const mempty) (lambdaReturnType lam)
-  opAliases (Scatter _len lam _ivs _as) =
-    map (const mempty) $ lambdaReturnType lam
+  opAliases = map (const mempty) . soacType
 
-  -- Only Map, Redomap and Stream can consume anything.  The operands
-  -- to Scan and Reduce functions are always considered "fresh".
+  -- Only Map, Redomap, WithLoop and Stream can consume anything.  The
+  -- operands to Scan and Reduce functions are always considered
+  -- "fresh".
   consumedInOp (Map _ lam arrs) =
     S.map consumedArray $ consumedByLambda lam
     where consumedArray v = fromMaybe v $ lookup v params_to_arrs
@@ -232,6 +249,10 @@ instance (Attributes lore, Aliased lore) => AliasedOp (SOAC lore) where
     S.map consumedArray $ consumedByLambda foldlam
     where consumedArray v = fromMaybe v $ lookup v params_to_arrs
           params_to_arrs = zip (map paramName $ drop (length nes) (lambdaParams foldlam)) arrs
+  consumedInOp (WithLoop _ (WithLoopForm _ _ map_lam) arrs) =
+    S.map consumedArray $ consumedByLambda map_lam
+    where consumedArray v = fromMaybe v $ lookup v params_to_arrs
+          params_to_arrs = zip (map paramName $ takeLast (length arrs) (lambdaParams map_lam)) arrs
   consumedInOp (Stream _ form lam arrs) =
     S.fromList $ subExpVars $
     case form of Sequential accs ->
@@ -276,6 +297,12 @@ instance (Attributes lore,
           analyseStreamForm (Sequential acc) = Sequential acc
   addOpAliases (Scatter len lam ivs as) =
     Scatter len (Alias.analyseLambda lam) ivs as
+  addOpAliases (WithLoop w (WithLoopForm (scan_lam, scan_nes) (comm, red_lam, red_nes) map_lam) arrs) =
+    WithLoop w (WithLoopForm
+                (Alias.analyseLambda scan_lam, scan_nes)
+                (comm, Alias.analyseLambda red_lam, red_nes)
+                (Alias.analyseLambda map_lam))
+               arrs
 
   removeOpAliases = runIdentity . mapSOACM remove
     where remove = SOACMapper return (return . removeLambdaAliases) return
@@ -333,6 +360,12 @@ instance (Attributes lore, CanBeRanged (Op lore)) => CanBeRanged (SOAC lore) whe
               return $ Parallel o comm lam0' acc
   addOpRanges (Scatter len lam ivs as) =
     Scatter len (Range.runRangeM $ Range.analyseLambda lam) ivs as
+  addOpRanges (WithLoop w (WithLoopForm (scan_lam, scan_nes) (comm, red_lam, red_nes) map_lam) arrs) =
+    WithLoop w (WithLoopForm
+                (Range.runRangeM $ Range.analyseLambda scan_lam, scan_nes)
+                (comm, Range.runRangeM $ Range.analyseLambda red_lam, red_nes)
+                (Range.runRangeM $ Range.analyseLambda map_lam))
+               arrs
 
 instance (Attributes lore, CanBeWise (Op lore)) => CanBeWise (SOAC lore) where
   type OpWithWisdom (SOAC lore) = SOAC (Wise lore)
@@ -487,6 +520,33 @@ typeCheckSOAC (Reduce size _ fun inputs) =
 typeCheckSOAC (Scan size fun inputs) =
   typeCheckScanReduce size fun inputs
 
+typeCheckSOAC (WithLoop w (WithLoopForm (scan_lam, scan_nes) (_, red_lam, red_nes) map_lam) arrs) = do
+  TC.require [Prim int32] w
+  arrs' <- TC.checkSOACArrayArgs w arrs
+  scan_nes' <- mapM TC.checkArg scan_nes
+  red_nes' <- mapM TC.checkArg red_nes
+  TC.checkLambda map_lam $ map TC.noArgAliases (scan_nes' ++ red_nes') ++ arrs'
+  TC.checkLambda scan_lam $ map TC.noArgAliases $ scan_nes' ++ scan_nes'
+  TC.checkLambda red_lam $ map TC.noArgAliases $ red_nes' ++ red_nes'
+  let scan_t = map TC.argType scan_nes'
+      red_t = map TC.argType red_nes'
+      map_lam_ts = lambdaReturnType map_lam
+
+  unless (scan_t == lambdaReturnType scan_lam) $
+    TC.bad $ TC.TypeError $ "Scan function returns type " ++
+    prettyTuple (lambdaReturnType scan_lam) ++ " but neutral element has type " ++
+    prettyTuple scan_t
+
+  unless (red_t == lambdaReturnType red_lam) $
+    TC.bad $ TC.TypeError $ "Reduce function returns type " ++
+    prettyTuple (lambdaReturnType red_lam) ++ " but neutral element has type " ++
+    prettyTuple red_t
+
+  unless (take (length scan_nes + length red_nes) map_lam_ts ==
+          map TC.argType (scan_nes'++ red_nes')) $
+    TC.bad $ TC.TypeError $ "Map function return type " ++ prettyTuple map_lam_ts ++
+    " wrong for given scan and reduction functions."
+
 typeCheckScanReduce :: TC.Checkable lore =>
                        SubExp
                     -> Lambda (Aliases lore)
@@ -559,6 +619,9 @@ instance OpMetrics (Op lore) => OpMetrics (SOAC lore) where
     inside "Stream" $ lambdaMetrics lam
   opMetrics (Scatter _len lam _ivs _as) =
     inside "Scatter" $ lambdaMetrics lam
+  opMetrics (WithLoop _ (WithLoopForm (scan_lam, _) (_, red_lam, _) map_lam) _) =
+    inside "WithLoop" $
+    lambdaMetrics scan_lam >> lambdaMetrics red_lam >> lambdaMetrics map_lam
 
 instance PrettyLore lore => PP.Pretty (SOAC lore) where
   ppr (Map size lam as) =
@@ -600,6 +663,16 @@ instance PrettyLore lore => PP.Pretty (SOAC lore) where
                commasep (PP.braces (commasep $ map ppr es) : map ppr as))
   ppr (Scatter len lam ivs as) =
     ppSOAC "scatter" len [lam] (Just (map Var ivs)) (map (\(_,n,a) -> (n,a)) as)
+  ppr (WithLoop w (WithLoopForm (scan_lam, scan_nes) (comm, red_lam, red_nes) map_lam) arrs) =
+    text s <> parens (ppr w <> comma </>
+                      ppr scan_lam <> comma </>
+                      PP.braces (commasep $ map ppr scan_nes) </>
+                      ppr red_lam <> comma </>
+                      PP.braces (commasep $ map ppr red_nes) </>
+                      ppr map_lam <> comma </>
+                      commasep (map ppr arrs))
+    where s = case comm of Noncommutative -> "withLoop"
+                           Commutative -> "withLoopComm"
 
 ppSOAC :: (Pretty fn, Pretty v) =>
           String -> SubExp -> [fn] -> Maybe [SubExp] -> [v] -> Doc

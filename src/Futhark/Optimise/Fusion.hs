@@ -342,10 +342,11 @@ greedyFuse rem_bnds lam_used_nms res (out_idds, cs, orig_soac, consumed) = do
   -- Assumption: the free vars in lambda are already in @infusible res@.
   let out_nms     = patternNames out_idds
       isInfusible = (`S.member` infusible res)
-      is_redomap_scanomap  = case orig_soac of
-                        SOAC.Redomap{}  -> True
-                        SOAC.Scanomap{} -> True
-                        _               -> False
+      is_withloop  = case orig_soac of
+                       SOAC.WithLoop{} -> True
+                       SOAC.Redomap{}  -> True
+                       SOAC.Scanomap{} -> True
+                       _               -> False
   --
   -- Conditions for fusion:
   -- If current soac is a replicate OR (current soac not a redomap AND
@@ -355,7 +356,7 @@ greedyFuse rem_bnds lam_used_nms res (out_idds, cs, orig_soac, consumed) = do
   -- (without duplicating computation in both cases)
 
   (ok_kers_compat, fused_kers, fused_nms, old_kers, oldker_nms) <-
-        if   is_redomap_scanomap || any isInfusible out_nms
+        if   is_withloop || any isInfusible out_nms
         then horizontGreedyFuse rem_bnds res (out_idds, cs, soac, consumed)
         else prodconsGreedyFuse          res (out_idds, cs, soac, consumed)
   --
@@ -552,11 +553,18 @@ horizontGreedyFuse rem_bnds res (out_idds, cs, soac, consumed) = do
 
 fusionGatherBody :: FusedRes -> Body -> FusionGM FusedRes
 
--- A reduce is translated to a redomap and treated from there.
+-- A reduce is translated to a withloop and treated from there.
 fusionGatherBody fres (Body blore (stmsToList ->
                                     Let pat bndtp (Op (Futhark.Reduce w comm lam args)):bnds) res) = do
   let (ne, arrs) = unzip args
-      equivsoac = Futhark.Redomap w comm lam lam ne arrs
+      equivsoac = Futhark.WithLoop w (WithLoopForm (nilFn, mempty) (comm, lam, ne) lam) arrs
+  fusionGatherBody fres $ Body blore (oneStm (Let pat bndtp (Op equivsoac))<>stmsFromList bnds) res
+
+-- A scan is translated to a withloop and treated from there.
+fusionGatherBody fres (Body blore (stmsToList ->
+                                    Let pat bndtp (Op (Futhark.Scan w lam args)):bnds) res) = do
+  let (ne, arrs) = unzip args
+      equivsoac = Futhark.WithLoop w (WithLoopForm (lam, ne) (Commutative, nilFn, mempty) lam) arrs
   fusionGatherBody fres $ Body blore (oneStm (Let pat bndtp (Op equivsoac))<>stmsFromList bnds) res
 
 -- Some forms of do-loops can profitably be considered streamSeqs.  We
@@ -635,6 +643,11 @@ fusionGatherBody fres (Body _ (stmsToList -> (bnd@(Let pat _ e):bnds)) res) = do
       -- NOT FUSIBLE (probably), but still add as kernel, as
       -- optimisations like ISWIM may make it fusible.
       reduceLike soac [lam] $ map fst args
+
+    Right soac@(SOAC.WithLoop _ (WithLoopForm (scan_lam, scan_nes)
+                                              (_, reduce_lam, reduce_nes)
+                                              map_lam) _) ->
+      reduceLike soac [scan_lam, reduce_lam, map_lam] $ scan_nes <> reduce_nes
 
     Right soac@(SOAC.Stream _ form lam _) -> do
       -- a redomap does not neccessarily start a new kernel, e.g.,
