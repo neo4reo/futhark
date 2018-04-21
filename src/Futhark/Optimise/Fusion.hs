@@ -181,7 +181,7 @@ fuseSOACs :: Pass SOACS SOACS
 fuseSOACs =
   Pass { passName = "Fuse SOACs"
        , passDescription = "Perform higher-order optimisation, i.e., fusion."
-       , passFunction = simplifySOACS <=< renameProg <=< intraproceduralTransformation fuseFun
+       , passFunction = {- simplifySOACS <=< renameProg <=< -} intraproceduralTransformation fuseFun
        }
 
 fuseFun :: FunDef -> PassM FunDef
@@ -555,8 +555,9 @@ fusionGatherBody :: FusedRes -> Body -> FusionGM FusedRes
 -- A reduce is translated to a redomap and treated from there.
 fusionGatherBody fres (Body blore (stmsToList ->
                                     Let pat bndtp (Op (Futhark.Reduce w comm lam args)):bnds) res) = do
+  maplam <- mkIdentityLambda $ lambdaReturnType lam
   let (ne, arrs) = unzip args
-      equivsoac = Futhark.Redomap w comm lam lam ne arrs
+      equivsoac = Futhark.Redomap w comm lam maplam ne arrs
   fusionGatherBody fres $ Body blore (oneStm (Let pat bndtp (Op equivsoac))<>stmsFromList bnds) res
 
 -- Some forms of do-loops can profitably be considered streamSeqs.  We

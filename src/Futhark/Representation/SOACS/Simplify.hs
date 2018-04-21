@@ -287,7 +287,7 @@ removeUnusedSOACInput _ pat _ (Redomap w comm redfun mapfun nes arrs)
           mapfun' =
             mapfun { lambdaParams = take (length nes) (lambdaParams mapfun) ++ used_params }
       letBind_ pat $ Op $ Redomap w comm redfun mapfun' nes used_arrs
-  where params_and_arrs = zip (drop (length nes) $ lambdaParams mapfun) arrs
+  where params_and_arrs = zip (lambdaParams mapfun) arrs
         used_in_body = freeInBody $ lambdaBody mapfun
         usedInput (param, _) = paramName param `S.member` used_in_body
 removeUnusedSOACInput _ _ _ _ = cannotSimplify
@@ -428,8 +428,9 @@ fuseConcatScatter vtable pat _ (Scatter _ fun arrs dests)
 fuseConcatScatter _ _ _ _ = cannotSimplify
 
 simplifyClosedFormRedomap :: TopDownRuleOp (Wise SOACS)
-simplifyClosedFormRedomap vtable pat _ (Redomap _ _ _ innerfun acc arr) =
-  foldClosedForm (`ST.lookupExp` vtable) pat innerfun acc arr
+simplifyClosedFormRedomap vtable pat _ (Redomap _ _ outerfun innerfun acc arr)
+  | isIdentityLambda innerfun =
+    foldClosedForm (`ST.lookupExp` vtable) pat outerfun acc arr
 simplifyClosedFormRedomap _ _ _ _ = cannotSimplify
 
 simplifyClosedFormReduce :: TopDownRuleOp (Wise SOACS)

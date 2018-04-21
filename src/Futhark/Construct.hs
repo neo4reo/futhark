@@ -46,6 +46,8 @@ module Futhark.Construct
   , fullSliceNum
   , isFullSlice
   , ifCommon
+  , mkIdentityLambda
+  , isIdentityLambda
 
   , module Futhark.Binder
 
@@ -414,6 +416,21 @@ isFullSlice shape slice = and $ zipWith allOfIt (shapeDims shape) slice
 
 ifCommon :: [Type] -> IfAttr ExtType
 ifCommon ts = IfAttr (staticShapes ts) IfNormal
+
+-- | Construct a lambda that takes parameters of the given types and
+-- simply returns them unchanged.
+mkIdentityLambda :: (Bindable lore, MonadFreshNames m) =>
+                    [Type] -> m (Lambda lore)
+mkIdentityLambda ts = do
+  params <- mapM (newParam "x") ts
+  return Lambda { lambdaParams = params
+                , lambdaBody = mkBody mempty $ map (Var . paramName) params
+                , lambdaReturnType = ts }
+
+-- | Is the given lambda an identity lambda?
+isIdentityLambda :: Lambda lore -> Bool
+isIdentityLambda lam = bodyResult (lambdaBody lam) ==
+                       map (Var . paramName) (lambdaParams lam)
 
 -- | Conveniently construct a body that contains no bindings.
 resultBody :: Bindable lore => [SubExp] -> Body lore
